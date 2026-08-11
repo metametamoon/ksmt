@@ -38,9 +38,25 @@ interface KCvc5SolverConfiguration : KSolverConfiguration {
     }
 }
 
+/**
+ * Sort of the descriptor values ksmt uses to keep uninterpreted sort values distinct
+ * (see `KCvc5ExprInternalizer.transform(KUninterpretedSortValue)`).
+ * */
+enum class KCvc5UninterpretedValueDescriptor { INT, BV }
+
 class KCvc5SolverLazyConfiguration : KCvc5SolverConfiguration {
     private var logicConfiguration: String? = null
     private val options = mutableMapOf<String, String>()
+
+    /**
+     * Theories the caller declared, or `null` when they did not, in which case
+     * nothing is known about the query and every theory has to be assumed.
+     * */
+    var declaredTheories: Set<KTheory>? = null
+        private set
+
+    var valueDescriptor: KCvc5UninterpretedValueDescriptor = KCvc5UninterpretedValueDescriptor.INT
+        private set
 
     override fun setCvc5Option(option: String, value: String) {
         options[option] = value
@@ -50,8 +66,29 @@ class KCvc5SolverLazyConfiguration : KCvc5SolverConfiguration {
         logicConfiguration = value
     }
 
+    /**
+     * ksmt keeps uninterpreted sort values distinct through values of a descriptor sort, so every
+     * query constrains that sort whether or not the caller declared its theory. A logic that
+     * forbids it makes cvc5 reject the check, so the two are chosen together.
+     * */
     override fun optimizeForTheories(theories: Set<KTheory>?, quantifiersAllowed: Boolean) {
-        logicConfiguration = theories.smtLib2String(quantifiersAllowed)
+        declaredTheories = theories
+
+        if (theories.isNullOrEmpty()) {
+            logicConfiguration = theories.smtLib2String(quantifiersAllowed)
+            return
+        }
+
+        val hasIntegerArithmetic = KTheory.LIA in theories || KTheory.NIA in theories
+
+        if (KTheory.BV in theories && !hasIntegerArithmetic) {
+            valueDescriptor = KCvc5UninterpretedValueDescriptor.BV
+            logicConfiguration = theories.smtLib2String(quantifiersAllowed)
+            return
+        }
+
+        val theoriesWithDescriptor = if (hasIntegerArithmetic) theories else theories + KTheory.LIA
+        logicConfiguration = theoriesWithDescriptor.smtLib2String(quantifiersAllowed)
     }
 
     fun configure(solver: Solver) {
