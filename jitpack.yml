@@ -1,0 +1,4 @@
+jdk:
+  - openjdk17
+install:
+  - ./gradlew :ksmt-core:publishToMavenLocal :ksmt-bitwuzla:ksmt-bitwuzla-core:publishToMavenLocal -PksmtVersion=$VERSION -x test
