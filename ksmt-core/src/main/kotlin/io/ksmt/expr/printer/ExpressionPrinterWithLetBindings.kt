@@ -7,82 +7,66 @@ import io.ksmt.expr.KExpr
  * Print expressions non-recursively.
  * Use let-bindings for common subexpressions to minimize result string.
  * */
-class ExpressionPrinterWithLetBindings {
+class ExpressionPrinterWithLetBindings(private val minBindingLength: Int = DEFAULT_MIN_BINDING_LENGTH) {
     fun print(expr: KExpr<*>, out: StringBuilder) {
-        val resolvedExpressionPrinters = hashMapOf<KExpr<*>, SingleExpressionPrinter>()
-        val printQueue = arrayListOf<SingleExpressionPrinter>()
-        val enqueuedToPrint = hashSetOf<KExpr<*>>()
+        val printers = hashMapOf<KExpr<*>, SingleExpressionPrinter>()
         val hasMultipleOccurrences = hashSetOf<KExpr<*>>()
 
         val exprStack = arrayListOf(expr)
         while (exprStack.isNotEmpty()) {
             val e = exprStack.removeLast()
 
-            if (e in resolvedExpressionPrinters || e in enqueuedToPrint) {
+            if (e in printers) {
                 hasMultipleOccurrences.add(e)
                 continue
             }
 
             val printer = SingleExpressionPrinter(e).also { e.print(it) }
-            printQueue.add(printer)
-            enqueuedToPrint.add(e)
+            printers[e] = printer
+            exprStack.addAll(printer.dependency)
+        }
 
-            if (!printer.hasDependency) {
-                resolvedExpressionPrinters[e] = printer
+        val resolvedExpressionPrinters = hashMapOf<KExpr<*>, SingleExpressionPrinter>()
+        val letBindings = arrayListOf<Pair<String, SingleExpressionPrinter>>()
+        for (printer in orderDependenciesFirst(expr, printers)) {
+            printer.resolveDependencies(resolvedExpressionPrinters, minBindingLength)
+            val e = printer.expr
+            val isConstant = e is KApp<*, *> && e.args.isEmpty()
+            if (e in hasMultipleOccurrences && !isConstant && printer.length >= minBindingLength) {
+                val bindingName = "e!${letBindings.size + 1}"
+                letBindings += bindingName to printer
+                resolvedExpressionPrinters[e] = SingleExpressionPrinter(e).apply {
+                    append(bindingName)
+                    resolveDependencies(resolvedExpressionPrinters, minBindingLength)
+                }
             } else {
-                exprStack.addAll(printer.dependency)
+                resolvedExpressionPrinters[e] = printer
             }
-        }
-
-        val letBindings = generateLetBindings(
-            resolvedExpressionPrinters = resolvedExpressionPrinters,
-            // reverse printer queue to generate lower binding indices for simpler expressions
-            unresolvedPrinters = printQueue.asReversed(),
-            hasMultipleOccurrences = hasMultipleOccurrences
-        )
-
-        while (printQueue.isNotEmpty()) {
-            val printer = printQueue.removeLast()
-            if (printer.expr in resolvedExpressionPrinters) continue
-            printer.resolveDependencies(resolvedExpressionPrinters)
-            resolvedExpressionPrinters[printer.expr] = printer
-        }
-
-        for ((_, printer) in letBindings) {
-            printer.resolveDependencies(resolvedExpressionPrinters)
         }
 
         val exprPrinter = resolvedExpressionPrinters.getValue(expr)
         printToBuffer(out, letBindings, exprPrinter)
     }
 
-    @Suppress("LoopWithTooManyJumpStatements")
-    private fun generateLetBindings(
-        resolvedExpressionPrinters: MutableMap<KExpr<*>, SingleExpressionPrinter>,
-        unresolvedPrinters: List<SingleExpressionPrinter>,
-        hasMultipleOccurrences: Set<KExpr<*>>
-    ): List<Pair<String, SingleExpressionPrinter>> {
-        val letBindings = arrayListOf<Pair<String, SingleExpressionPrinter>>()
-        val immutableResolvedPrinters = resolvedExpressionPrinters.values.toList()
-        val letBindingCandidates = immutableResolvedPrinters.asSequence() + unresolvedPrinters.asSequence()
-        for (printer in letBindingCandidates) {
-            val expr = printer.expr
-            when {
-                expr !in hasMultipleOccurrences -> continue
-                // Don't produce bindings for constants
-                expr is KApp<*, *> && expr.args.isEmpty() -> continue
-                else -> {
-                    val bindingIdx = letBindings.size + 1
-                    val bindingName = "e!$bindingIdx"
-
-                    letBindings += bindingName to printer
-                    resolvedExpressionPrinters[expr] = SingleExpressionPrinter(expr).apply {
-                        append(bindingName)
-                    }
-                }
+    private fun orderDependenciesFirst(
+        root: KExpr<*>,
+        printers: Map<KExpr<*>, SingleExpressionPrinter>
+    ): List<SingleExpressionPrinter> {
+        val ordered = arrayListOf<SingleExpressionPrinter>()
+        val visited = hashSetOf<KExpr<*>>()
+        val stack = arrayListOf(root to false)
+        while (stack.isNotEmpty()) {
+            val (e, dependenciesDone) = stack.removeLast()
+            val printer = printers.getValue(e)
+            if (dependenciesDone) {
+                ordered += printer
+                continue
             }
+            if (!visited.add(e)) continue
+            stack += e to true
+            printer.dependency.asReversed().forEach { if (it !in visited) stack += it to false }
         }
-        return letBindings
+        return ordered
     }
 
     private fun printToBuffer(
@@ -130,25 +114,37 @@ class ExpressionPrinterWithLetBindings {
             hasDependency = true
         }
 
-        fun resolveDependencies(printedExpressions: Map<KExpr<*>, SingleExpressionPrinter>) {
-            if (!hasDependency) return
+        var length = 0
+            private set
 
-            val currentParts = parts.toList()
-            parts.clear()
+        fun resolveDependencies(printedExpressions: Map<KExpr<*>, SingleExpressionPrinter>, lengthCap: Int) {
+            if (hasDependency) {
+                val currentParts = parts.toList()
+                parts.clear()
 
-            for (part in currentParts) {
-                if (part !is KExpr<*>) {
-                    parts.add(part)
-                    continue
+                for (part in currentParts) {
+                    if (part !is KExpr<*>) {
+                        parts.add(part)
+                        continue
+                    }
+
+                    val printer = printedExpressions[part] ?: error("Printer failed")
+                    check(!printer.hasDependency) { "Printer has unresolved parts" }
+
+                    parts.add(printer)
                 }
 
-                val printer = printedExpressions[part] ?: error("Printer failed")
-                check(!printer.hasDependency) { "Printer has unresolved parts" }
-
-                parts.add(printer)
+                hasDependency = false
             }
 
-            hasDependency = false
+            length = parts.fold(0) { total, part ->
+                val partLength = when (part) {
+                    is String -> part.length
+                    is SingleExpressionPrinter -> part.length
+                    else -> error("Unexpected printer part")
+                }
+                (total + partLength).coerceAtMost(lengthCap)
+            }
         }
 
         fun printToBuffer(buffer: StringBuilder) {
@@ -166,4 +162,7 @@ class ExpressionPrinterWithLetBindings {
         }
     }
 
+    companion object {
+        const val DEFAULT_MIN_BINDING_LENGTH = 100
+    }
 }

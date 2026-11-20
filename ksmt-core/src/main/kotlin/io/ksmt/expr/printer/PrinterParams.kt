@@ -2,6 +2,7 @@ package io.ksmt.expr.printer
 
 data class PrinterParams(
     val bvValuePrintMode: BvValuePrintMode = BvValuePrintMode.HEX,
+    val minLetBindingLength: Int = ExpressionPrinterWithLetBindings.DEFAULT_MIN_BINDING_LENGTH,
 )
 
 /**

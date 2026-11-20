@@ -20,7 +20,7 @@ abstract class KExpr<T : KSort>(ctx: KContext) : KAst(ctx), KInternedObject {
     override fun hashCode(): Int = System.identityHashCode(this)
 
     override fun print(builder: StringBuilder) {
-        ExpressionPrinterWithLetBindings().print(this, builder)
+        ExpressionPrinterWithLetBindings(ctx.printerParams.minLetBindingLength).print(this, builder)
     }
 
     abstract fun print(printer: ExpressionPrinter)
